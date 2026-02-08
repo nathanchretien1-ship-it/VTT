@@ -1,4 +1,8 @@
 import { create } from 'zustand';
+import { io, Socket } from 'socket.io-client';
+
+// Connexion au serveur
+const socket = io('http://localhost:3000');
 
 export interface Token {
   id: string;
@@ -15,33 +19,65 @@ interface GameState {
   camera: { x: number; y: number; zoom: number };
   selection: string | null;
   gridSize: number;
-  mapBackground: { url: string | null; width: number; height: number; offsetX: number; offsetY: number };
-
+  mapBackground: { url: string | null; width: number; height: number };
+  
+  // Actions
   setCamera: (x: number, y: number) => void;
   setZoom: (zoom: number) => void;
-  addToken: (token: Token) => void;
-  updateTokenPosition: (id: string, x: number, y: number) => void;
+  updateTokenPosition: (id: string, x: number, y: number, emit?: boolean) => void; // Ajout param 'emit'
   selectToken: (id: string | null) => void;
-  setMapBackground: (url: string, width: number, height: number) => void;
+  setMapBackground: (url: string, width: number, height: number, emit?: boolean) => void;
+  
+  // Action serveur
+  syncState: (serverState: any) => void;
 }
 
-export const useGameStore = create<GameState>((set) => ({
-  tokens: [
-    { id: 't1', name: 'Guerrier', x: 2, y: 2, size: 1, color: '#ef4444', hp: { current: 10, max: 15 } },
-  ],
-  camera: { x: 0, y: 0, zoom: 1 },
-  selection: null,
-  gridSize: 70,
-  mapBackground: { url: null, width: 0, height: 0, offsetX: 0, offsetY: 0 },
+export const useGameStore = create<GameState>((set, get) => {
+  
+  // Écouteurs Socket.IO (Initialisation)
+  socket.on('init-state', (state) => {
+    set({ tokens: state.tokens, mapBackground: state.mapBackground || { url: null, width: 0, height: 0 } });
+  });
 
-  setCamera: (x, y) => set((state) => ({ camera: { ...state.camera, x, y } })),
-  setZoom: (zoom) => set((state) => ({ camera: { ...state.camera, zoom } })),
-  addToken: (token) => set((state) => ({ tokens: [...state.tokens, token] })),
-  updateTokenPosition: (id, x, y) => set((state) => ({
-    tokens: state.tokens.map(t => t.id === id ? { ...t, x, y } : t)
-  })),
-  selectToken: (id) => set({ selection: id }),
-  setMapBackground: (url, width, height) => set({ 
-    mapBackground: { url, width, height, offsetX: 0, offsetY: 0 } 
-  }),
-}));
+  socket.on('token-moved', ({ id, x, y }) => {
+    // On met à jour SANS ré-émettre l'événement (pour éviter une boucle infinie)
+    get().updateTokenPosition(id, x, y, false);
+  });
+
+  socket.on('map-changed', (mapData) => {
+    set({ mapBackground: mapData });
+  });
+
+  return {
+    tokens: [], // On part vide, le serveur nous donnera la vérité
+    camera: { x: 0, y: 0, zoom: 1 },
+    selection: null,
+    gridSize: 70,
+    mapBackground: { url: null, width: 0, height: 0 },
+
+    setCamera: (x, y) => set((state) => ({ camera: { ...state.camera, x, y } })),
+    setZoom: (zoom) => set((state) => ({ camera: { ...state.camera, zoom } })),
+
+    updateTokenPosition: (id, x, y, emit = true) => {
+      set((state) => ({
+        tokens: state.tokens.map(t => t.id === id ? { ...t, x, y } : t)
+      }));
+      // Si c'est nous qui bougeons, on prévient le serveur
+      if (emit) {
+        socket.emit('move-token', { id, x, y });
+      }
+    },
+
+    selectToken: (id) => set({ selection: id }),
+
+    setMapBackground: (url, width, height, emit = true) => {
+      const mapData = { url, width, height };
+      set({ mapBackground: mapData });
+      if (emit) {
+        socket.emit('change-map', mapData);
+      }
+    },
+
+    syncState: (state) => set(state),
+  };
+});

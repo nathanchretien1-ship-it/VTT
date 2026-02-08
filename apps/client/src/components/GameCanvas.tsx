@@ -1,280 +1,271 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useGameStore } from '../store/gameStore';
 
-const GameCanvas: React.FC = () => {
+export const GameCanvas = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   
-  // On récupère uniquement les setters pour éviter les re-rendus
+  // Récupération de l'état via Zustand
   const { 
-    setCamera, setZoom, updateTokenPosition, selectToken, setMapBackground 
+    tokens, 
+    camera, 
+    gridSize, 
+    mapBackground,
+    setCamera, 
+    setZoom, 
+    updateTokenPosition, 
+    selectToken, 
+    selection 
   } = useGameStore();
 
-  const [mapImage, setMapImage] = useState<HTMLImageElement | null>(null);
+  // Refs pour la gestion de la souris (évite les re-renders inutiles)
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const cameraStartRef = useRef({ x: 0, y: 0 });
+  const selectedTokenIdRef = useRef<string | null>(null);
+  const isPanningRef = useRef(false);
 
-  // --- VARIABLES DE DRAG (Stockées hors de React) ---
-  const dragRef = useRef({
-    isPanning: false,
-    isDraggingToken: null as string | null,
-    startX: 0,      // Position souris au début du clic
-    startY: 0,
-    startCamX: 0,   // Position caméra au début du clic (FIXE)
-    startCamY: 0,
-    debugMsg: "Prêt" // Pour afficher à l'écran
-  });
+  // Conversion Coordonnées Écran -> Monde (Grille)
+  const screenToWorld = (screenX: number, screenY: number) => {
+    return {
+      x: (screenX - camera.x) / camera.zoom,
+      y: (screenY - camera.y) / camera.zoom
+    };
+  };
 
-  // Chargement de l'image
-  const mapUrl = useGameStore(s => s.mapBackground.url);
-  useEffect(() => {
-    if (mapUrl) {
-      const img = new Image();
-      img.src = mapUrl;
-      img.onload = () => setMapImage(img);
-    }
-  }, [mapUrl]);
-
-  // =========================================================================
-  // 1. GESTION DES ÉVÉNEMENTS (LOGIQUE ABSOLUE)
-  // =========================================================================
+  // BOUCLE DE RENDU PRINCIPALE
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-    // Convertit l'écran en coordonnées du monde
-    const getLocalCoords = (clientX: number, clientY: number) => {
-      const rect = canvas.getBoundingClientRect();
-      const { camera } = useGameStore.getState(); // Lecture directe sans dépendance
-      return {
-        x: (clientX - rect.left - camera.x) / camera.zoom,
-        y: (clientY - rect.top - camera.y) / camera.zoom
-      };
-    };
-
-    const onMouseDown = (e: MouseEvent) => {
-      e.preventDefault(); // Empêche le navigateur de sélectionner du texte
-      
-      const { camera, tokens, gridSize } = useGameStore.getState();
-      
-      // 1. ON SAUVEGARDE L'ÉTAT INITIAL (Le point d'ancrage)
-      dragRef.current.startX = e.clientX;
-      dragRef.current.startY = e.clientY;
-      dragRef.current.startCamX = camera.x;
-      dragRef.current.startCamY = camera.y;
-      
-      // Est-ce qu'on clique sur un token ?
-      const coords = getLocalCoords(e.clientX, e.clientY);
-      const clickedToken = tokens.find(t => {
-        const tx = t.x * gridSize;
-        const ty = t.y * gridSize;
-        const ts = t.size * gridSize;
-        return coords.x >= tx && coords.x <= tx + ts && coords.y >= ty && coords.y <= ty + ts;
-      });
-
-      if (e.button === 0 && clickedToken) {
-        // Clic Gauche sur Token
-        selectToken(clickedToken.id);
-        dragRef.current.isDraggingToken = clickedToken.id;
-        dragRef.current.debugMsg = `Token ${clickedToken.name}`;
-      } else {
-        // Clic Droit ou Vide -> PAN
-        dragRef.current.isPanning = true;
-        dragRef.current.debugMsg = "Panning (Ancré)";
-        canvas.style.cursor = 'grabbing';
-      }
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (dragRef.current.isPanning) {
-        // --- CŒUR DU CORRECTIF ---
-        // On calcule la distance parcourue par la souris depuis le CLIC
-        const totalDeltaX = e.clientX - dragRef.current.startX;
-        const totalDeltaY = e.clientY - dragRef.current.startY;
-
-        // On applique cette distance au point de départ FIXE
-        // Aucune boucle infinie possible ici car startCamX ne change jamais pendant le drag
-        setCamera(
-          dragRef.current.startCamX + totalDeltaX,
-          dragRef.current.startCamY + totalDeltaY
-        );
-        
-        dragRef.current.debugMsg = `Delta: ${totalDeltaX}, ${totalDeltaY}`;
-      }
-    };
-
-    const onMouseUp = (e: MouseEvent) => {
-      if (dragRef.current.isPanning) {
-        dragRef.current.isPanning = false;
-        canvas.style.cursor = 'grab';
-        dragRef.current.debugMsg = "Relâché";
-      }
-
-      if (dragRef.current.isDraggingToken) {
-        const { gridSize } = useGameStore.getState();
-        const coords = getLocalCoords(e.clientX, e.clientY);
-        const gx = Math.floor(coords.x / gridSize);
-        const gy = Math.floor(coords.y / gridSize);
-        updateTokenPosition(dragRef.current.isDraggingToken, gx, gy);
-        dragRef.current.isDraggingToken = null;
-        dragRef.current.debugMsg = `Token Placé en ${gx}, ${gy}`;
-      }
-    };
-
-    const onWheel = (e: WheelEvent) => {
-        e.preventDefault();
-        const { camera } = useGameStore.getState();
-        const zoomSpeed = 0.001;
-        const newZoom = Math.min(Math.max(camera.zoom * (1 - e.deltaY * zoomSpeed), 0.1), 5);
-        
-        // Zoom centré sur la souris
-        const rect = canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-        const worldX = (mouseX - camera.x) / camera.zoom;
-        const worldY = (mouseY - camera.y) / camera.zoom;
-        
-        const newX = mouseX - worldX * newZoom;
-        const newY = mouseY - worldY * newZoom;
-
-        setCamera(newX, newY);
-        setZoom(newZoom);
-        dragRef.current.debugMsg = `Zoom: ${newZoom.toFixed(2)}`;
-    };
-
-    // Attachement des écouteurs "Vrais" (Pas React) pour éviter toute latence
-    canvas.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove); // Window capture tout
-    window.addEventListener('mouseup', onMouseUp);
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    canvas.addEventListener('contextmenu', e => e.preventDefault());
-
-    return () => {
-      canvas.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      canvas.removeEventListener('wheel', onWheel);
-    };
-  }, []); // Dépendances vides = Zéro rechargement intempestif
-
-  // =========================================================================
-  // 2. BOUCLE DE DESSIN (60 FPS)
-  // =========================================================================
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
-
-    const resizeObserver = new ResizeObserver(() => {
-        if(containerRef.current) {
-            canvas.width = containerRef.current.clientWidth;
-            canvas.height = containerRef.current.clientHeight;
-        }
-    });
-    if(containerRef.current) resizeObserver.observe(containerRef.current);
-
-    let frameId: number;
+    let animationFrameId: number;
 
     const render = () => {
-      const { camera, tokens, gridSize, mapBackground, selection } = useGameStore.getState();
+      // 1. Mise à l'échelle du canvas (DPI)
+      const { width, height } = canvas.getBoundingClientRect();
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
 
-      // Reset
+      // 2. Nettoyage
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#0f172a';
+      ctx.fillStyle = '#1a1a1a'; // Couleur de fond hors map
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       ctx.save();
+
+      // 3. Application de la Caméra (Pan & Zoom)
       ctx.translate(camera.x, camera.y);
       ctx.scale(camera.zoom, camera.zoom);
 
-      // Map
-      if (mapImage) {
-        ctx.drawImage(mapImage, 0, 0, mapBackground.width, mapBackground.height);
-      }
+      // --- DESSIN DU JEU ---
 
-      // Grille (visible si zoom suffisant)
-      if (camera.zoom > 0.2) {
-        const startX = Math.floor((-camera.x / camera.zoom) / gridSize) * gridSize - gridSize;
-        const startY = Math.floor((-camera.y / camera.zoom) / gridSize) * gridSize - gridSize;
-        const endX = startX + (canvas.width / camera.zoom) + 2 * gridSize;
-        const endY = startY + (canvas.height / camera.zoom) + 2 * gridSize;
-
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for (let x = startX; x <= endX; x += gridSize) {
-            ctx.moveTo(x, startY); ctx.lineTo(x, endY);
-        }
-        for (let y = startY; y <= endY; y += gridSize) {
-            ctx.moveTo(startX, y); ctx.lineTo(endX, y);
-        }
-        ctx.stroke();
-      }
-
-      // Tokens
-      tokens.forEach(t => {
-        const x = t.x * gridSize;
-        const y = t.y * gridSize;
-        const s = t.size * gridSize;
+      // A. Map Background
+      if (mapBackground.url) {
+        // Note: Dans une vraie implémentation, charge l'image via un objet Image() externe pour ne pas la recharger à chaque frame
+        // Ici on dessine juste un placeholder ou l'image si elle était préchargée.
+        // Pour ce code, on va dessiner un rectangle gris représentant la map si pas d'image chargée
+        ctx.fillStyle = '#2a2a2a';
+        ctx.fillRect(0, 0, mapBackground.width, mapBackground.height);
         
-        ctx.shadowBlur = 15; ctx.shadowColor = 'black';
+        // Si tu as l'image chargée dans un ref, tu utiliserais ctx.drawImage ici
+      }
+
+      // B. Grille
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.lineWidth = 1;
+      const mapW = mapBackground.width || 2000; // Taille par défaut
+      const mapH = mapBackground.height || 2000;
+
+      ctx.beginPath();
+      for (let x = 0; x <= mapW; x += gridSize) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, mapH);
+      }
+      for (let y = 0; y <= mapH; y += gridSize) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(mapW, y);
+      }
+      ctx.stroke();
+
+      // C. Tokens
+      tokens.forEach(token => {
+        const x = token.x * gridSize;
+        const y = token.y * gridSize;
+        const size = token.size * gridSize;
+
+        // Ombre portée
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 10;
+
+        // Corps du token
+        ctx.fillStyle = token.color;
         ctx.beginPath();
-        ctx.arc(x + s/2, y + s/2, s*0.4, 0, Math.PI*2);
-        ctx.fillStyle = t.color;
+        // On dessine un rond au milieu de la case
+        ctx.arc(x + size / 2, y + size / 2, size / 2 - 4, 0, Math.PI * 2);
         ctx.fill();
-        
-        if (selection === t.id) {
-            ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3/camera.zoom; ctx.stroke();
+
+        ctx.shadowBlur = 0; // Reset ombre
+
+        // Sélection (cercle blanc autour)
+        if (selection === token.id) {
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 2;
+          ctx.stroke();
         }
-        ctx.shadowBlur = 0;
+
+        // Nom du token
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(token.name, x + size / 2, y - 8);
       });
+
+      // --- D. BROUILLARD DE GUERRE (FOG OF WAR) ---
+      // On sauvegarde pour isoler l'effet de "gomme"
+      ctx.save();
+      
+      // On dessine un rectangle noir semi-transparent sur TOUTE la map
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.95)'; // Opacité du brouillard (0.95 = très sombre)
+      ctx.fillRect(0, 0, mapW, mapH);
+
+      // Mode "Gomme" : Ce qu'on dessine maintenant va rendre le noir transparent
+      ctx.globalCompositeOperation = 'destination-out';
+
+      tokens.forEach(token => {
+        const centerX = (token.x * gridSize) + (token.size * gridSize) / 2;
+        const centerY = (token.y * gridSize) + (token.size * gridSize) / 2;
+        // Rayon de vision : ici 3 cases
+        const visionRadius = gridSize * 3; 
+
+        // Dégradé pour des bords de vision doux
+        const gradient = ctx.createRadialGradient(
+          centerX, centerY, visionRadius * 0.5, // début du dégradé (clair)
+          centerX, centerY, visionRadius        // fin du dégradé (sombre)
+        );
+        gradient.addColorStop(0, 'rgba(0, 0, 0, 1)'); // En mode destination-out, alpha 1 = efface totalement
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)'); // En mode destination-out, alpha 0 = n'efface rien
+
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, visionRadius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Restaure le mode de dessin normal
       ctx.restore();
+      // ------------------------------------------
 
-      // --- DEBUG OVERLAY (Texte Rouge) ---
-      // Si tu ne vois pas ça, le composant a crashé
-      ctx.fillStyle = 'red';
-      ctx.font = 'bold 16px monospace';
-      ctx.fillText(`STATUS: ${dragRef.current.debugMsg}`, 20, 30);
-      ctx.fillText(`CAMERA: ${Math.round(camera.x)}, ${Math.round(camera.y)} (z:${camera.zoom.toFixed(2)})`, 20, 50);
+      ctx.restore(); // Fin de la caméra
 
-      frameId = requestAnimationFrame(render);
+      animationFrameId = requestAnimationFrame(render);
     };
 
     render();
-    return () => {
-      cancelAnimationFrame(frameId);
-      resizeObserver.disconnect();
-    };
-  }, [mapImage]);
 
-  // Drag & Drop Image
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file?.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = (evt) => {
-            const img = new Image();
-            img.onload = () => setMapBackground(evt.target?.result as string, img.width, img.height);
-            img.src = evt.target?.result as string;
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [tokens, camera, gridSize, mapBackground, selection]); // Dépendances
+
+  // --- GESTION DES ÉVÉNEMENTS (SOURIS) ---
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const worldPos = screenToWorld(mouseX, mouseY);
+
+    // Vérifier si on clique sur un token
+    // On cherche du dernier au premier (pour attraper celui du dessus)
+    const clickedToken = [...tokens].reverse().find(t => {
+      const tx = t.x * gridSize;
+      const ty = t.y * gridSize;
+      const tSize = t.size * gridSize;
+      return worldPos.x >= tx && worldPos.x <= tx + tSize &&
+             worldPos.y >= ty && worldPos.y <= ty + tSize;
+    });
+
+    if (e.button === 0) { // Clic gauche
+      if (clickedToken) {
+        selectToken(clickedToken.id);
+        selectedTokenIdRef.current = clickedToken.id;
+        isDraggingRef.current = true;
+        // Offset pour attraper le token là où on a cliqué, pas juste par son coin haut/gauche
+        dragStartRef.current = {
+          x: worldPos.x - (clickedToken.x * gridSize),
+          y: worldPos.y - (clickedToken.y * gridSize)
         };
-        reader.readAsDataURL(file);
+      } else {
+        // Clic dans le vide = Pan caméra ou désélection
+        selectToken(null);
+        isPanningRef.current = true;
+        dragStartRef.current = { x: e.clientX, y: e.clientY };
+        cameraStartRef.current = { ...camera };
+      }
     }
   };
 
+  const handleMouseMove = (e: React.MouseEvent) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    
+    if (isDraggingRef.current && selectedTokenIdRef.current) {
+      // Déplacement de Token
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const worldPos = screenToWorld(mouseX, mouseY);
+
+      // Calcul de la nouvelle position (sans aimanter à la grille tout de suite pour fluidité)
+      // Ou aimanter directement :
+      const rawX = worldPos.x - dragStartRef.current.x;
+      const rawY = worldPos.y - dragStartRef.current.y;
+
+      // On convertit en coordonnées grille pour le store
+      const gridX = rawX / gridSize;
+      const gridY = rawY / gridSize;
+
+      updateTokenPosition(selectedTokenIdRef.current, gridX, gridY);
+    } 
+    else if (isPanningRef.current) {
+      // Déplacement de Caméra
+      const dx = e.clientX - dragStartRef.current.x;
+      const dy = e.clientY - dragStartRef.current.y;
+      setCamera(cameraStartRef.current.x + dx, cameraStartRef.current.y + dy);
+    }
+  };
+
+  const handleMouseUp = () => {
+    // Si on lâchait un token, on peut l'aimanter à la grille ici si on veut
+    if (isDraggingRef.current && selectedTokenIdRef.current) {
+      const token = tokens.find(t => t.id === selectedTokenIdRef.current);
+      if (token) {
+        // Aimentation simple (snap to grid)
+        const snappedX = Math.round(token.x);
+        const snappedY = Math.round(token.y);
+        updateTokenPosition(token.id, snappedX, snappedY);
+      }
+    }
+
+    isDraggingRef.current = false;
+    isPanningRef.current = false;
+    selectedTokenIdRef.current = null;
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+    const newZoom = Math.max(0.1, Math.min(5, camera.zoom - e.deltaY * 0.001));
+    setZoom(newZoom);
+  };
+
   return (
-    <div ref={containerRef} className="w-full h-full bg-black relative">
-      <canvas
-        ref={canvasRef}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={handleDrop}
-        className="block w-full h-full cursor-grab"
-      />
-      {!useGameStore(s => s.mapBackground.url) && (
-        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 text-slate-500 pointer-events-none">
-            Glisse une image ici
-        </div>
-      )}
-    </div>
+    <canvas
+      ref={canvasRef}
+      className="block w-full h-full bg-neutral-900 cursor-crosshair"
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      onWheel={handleWheel}
+      onContextMenu={(e) => e.preventDefault()}
+    />
   );
 };
-
-export default GameCanvas;
