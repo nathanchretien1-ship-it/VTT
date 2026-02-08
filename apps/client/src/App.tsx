@@ -1,16 +1,14 @@
 import GameCanvas from './components/GameCanvas';
+import InterfaceUI from './components/InterfaceUI';
 
 function App() {
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-black text-white">
-      {/* Interface utilisateur par-dessus la carte */}
-      <div className="absolute top-4 left-4 z-10 p-4 bg-slate-800/80 rounded-lg shadow-xl">
-        <h1 className="text-xl font-bold">Mon VTT - Alpha</h1>
-        <p className="text-sm text-slate-400">Mode : Construction</p>
-      </div>
-
-      {/* La Table de Jeu */}
+    <div className="relative w-screen h-screen overflow-hidden bg-black select-none">
+      {/* 1. Le monde du jeu (Canvas) */}
       <GameCanvas />
+      
+      {/* 2. L'Interface (HUD) */}
+      <InterfaceUI />
     </div>
   );
 }
