@@ -1,6 +1,13 @@
 import React, { useEffect, useRef } from 'react';
 
+
+
+
 const GameCanvas: React.FC = () => {
+
+  const [camera, setCamera] = React.useState({ x: 0, y: 0, zoom: 1 });
+  const [isDragging, setIsDragging] = React.useState(false);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gridSize = 50; // Taille d'une case en pixels
 
@@ -16,6 +23,8 @@ const GameCanvas: React.FC = () => {
     canvas.height = window.innerHeight;
 
     const drawGrid = () => {
+        ctx.translate(camera.x, camera.y);
+        ctx.scale(camera.zoom, camera.zoom);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.strokeStyle = '#334155'; // Couleur gris ardoise
       ctx.lineWidth = 1;
