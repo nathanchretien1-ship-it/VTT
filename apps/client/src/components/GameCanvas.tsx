@@ -5,28 +5,25 @@ const GameCanvas: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
-  // Accès aux actions du store
+  // On récupère uniquement les setters pour éviter les re-rendus
   const { 
     setCamera, setZoom, updateTokenPosition, selectToken, setMapBackground 
   } = useGameStore();
 
-  // État local pour l'image (seul useState autorisé)
   const [mapImage, setMapImage] = useState<HTMLImageElement | null>(null);
 
-  // --- REFS MUTABLES (Le cœur du système) ---
-  // On n'utilise PAS useState pour éviter les re-rendus pendant le drag
-  const stateRef = useRef({
+  // --- VARIABLES DE DRAG (Stockées hors de React) ---
+  const dragRef = useRef({
     isPanning: false,
     isDraggingToken: null as string | null,
-    startX: 0,
+    startX: 0,      // Position souris au début du clic
     startY: 0,
-    startCamX: 0,
+    startCamX: 0,   // Position caméra au début du clic (FIXE)
     startCamY: 0,
-    lastMouseX: 0,
-    lastMouseY: 0
+    debugMsg: "Prêt" // Pour afficher à l'écran
   });
 
-  // Chargement Image
+  // Chargement de l'image
   const mapUrl = useGameStore(s => s.mapBackground.url);
   useEffect(() => {
     if (mapUrl) {
@@ -37,138 +34,135 @@ const GameCanvas: React.FC = () => {
   }, [mapUrl]);
 
   // =========================================================================
-  // 1. GESTION DES ÉVÉNEMENTS NATIFS (Le "Fix" Radical)
+  // 1. GESTION DES ÉVÉNEMENTS (LOGIQUE ABSOLUE)
   // =========================================================================
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Fonction utilitaire pour coordonnées
-    const getLocalCoords = (e: MouseEvent) => {
+    // Convertit l'écran en coordonnées du monde
+    const getLocalCoords = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
-      const { camera } = useGameStore.getState();
-      const x = (e.clientX - rect.left - camera.x) / camera.zoom;
-      const y = (e.clientY - rect.top - camera.y) / camera.zoom;
-      return { x, y, clientX: e.clientX, clientY: e.clientY };
+      const { camera } = useGameStore.getState(); // Lecture directe sans dépendance
+      return {
+        x: (clientX - rect.left - camera.x) / camera.zoom,
+        y: (clientY - rect.top - camera.y) / camera.zoom
+      };
     };
 
     const onMouseDown = (e: MouseEvent) => {
-      const { camera, tokens, gridSize } = useGameStore.getState();
-      const coords = getLocalCoords(e);
+      e.preventDefault(); // Empêche le navigateur de sélectionner du texte
       
-      stateRef.current.startX = e.clientX;
-      stateRef.current.startY = e.clientY;
-      stateRef.current.startCamX = camera.x;
-      stateRef.current.startCamY = camera.y;
+      const { camera, tokens, gridSize } = useGameStore.getState();
+      
+      // 1. ON SAUVEGARDE L'ÉTAT INITIAL (Le point d'ancrage)
+      dragRef.current.startX = e.clientX;
+      dragRef.current.startY = e.clientY;
+      dragRef.current.startCamX = camera.x;
+      dragRef.current.startCamY = camera.y;
+      
+      // Est-ce qu'on clique sur un token ?
+      const coords = getLocalCoords(e.clientX, e.clientY);
+      const clickedToken = tokens.find(t => {
+        const tx = t.x * gridSize;
+        const ty = t.y * gridSize;
+        const ts = t.size * gridSize;
+        return coords.x >= tx && coords.x <= tx + ts && coords.y >= ty && coords.y <= ty + ts;
+      });
 
-      // Clic Droit ou Molette = PAN
-      if (e.button === 1 || e.button === 2) {
-        stateRef.current.isPanning = true;
+      if (e.button === 0 && clickedToken) {
+        // Clic Gauche sur Token
+        selectToken(clickedToken.id);
+        dragRef.current.isDraggingToken = clickedToken.id;
+        dragRef.current.debugMsg = `Token ${clickedToken.name}`;
+      } else {
+        // Clic Droit ou Vide -> PAN
+        dragRef.current.isPanning = true;
+        dragRef.current.debugMsg = "Panning (Ancré)";
         canvas.style.cursor = 'grabbing';
-        e.preventDefault();
-        return;
-      }
-
-      // Clic Gauche = Token ou Pan
-      if (e.button === 0) {
-        const clickedToken = tokens.find(t => {
-          const tx = t.x * gridSize;
-          const ty = t.y * gridSize;
-          const ts = t.size * gridSize;
-          return coords.x >= tx && coords.x <= tx + ts && coords.y >= ty && coords.y <= ty + ts;
-        });
-
-        if (clickedToken) {
-          selectToken(clickedToken.id);
-          stateRef.current.isDraggingToken = clickedToken.id;
-        } else {
-          selectToken(null);
-          stateRef.current.isPanning = true; // Drag le fond
-          canvas.style.cursor = 'grabbing';
-        }
       }
     };
 
     const onMouseMove = (e: MouseEvent) => {
-      stateRef.current.lastMouseX = e.clientX; // Pour le debug
-      stateRef.current.lastMouseY = e.clientY;
+      if (dragRef.current.isPanning) {
+        // --- CŒUR DU CORRECTIF ---
+        // On calcule la distance parcourue par la souris depuis le CLIC
+        const totalDeltaX = e.clientX - dragRef.current.startX;
+        const totalDeltaY = e.clientY - dragRef.current.startY;
 
-      if (stateRef.current.isPanning) {
-        // CALCUL ABSOLU : Position actuelle - Position Départ
-        const dx = e.clientX - stateRef.current.startX;
-        const dy = e.clientY - stateRef.current.startY;
-        
-        // On applique directement sans accumulation
+        // On applique cette distance au point de départ FIXE
+        // Aucune boucle infinie possible ici car startCamX ne change jamais pendant le drag
         setCamera(
-          stateRef.current.startCamX + dx,
-          stateRef.current.startCamY + dy
+          dragRef.current.startCamX + totalDeltaX,
+          dragRef.current.startCamY + totalDeltaY
         );
+        
+        dragRef.current.debugMsg = `Delta: ${totalDeltaX}, ${totalDeltaY}`;
       }
     };
 
     const onMouseUp = (e: MouseEvent) => {
-      if (stateRef.current.isPanning) {
-        stateRef.current.isPanning = false;
+      if (dragRef.current.isPanning) {
+        dragRef.current.isPanning = false;
         canvas.style.cursor = 'grab';
+        dragRef.current.debugMsg = "Relâché";
       }
 
-      if (stateRef.current.isDraggingToken) {
+      if (dragRef.current.isDraggingToken) {
         const { gridSize } = useGameStore.getState();
-        const coords = getLocalCoords(e);
+        const coords = getLocalCoords(e.clientX, e.clientY);
         const gx = Math.floor(coords.x / gridSize);
         const gy = Math.floor(coords.y / gridSize);
-        
-        updateTokenPosition(stateRef.current.isDraggingToken, gx, gy);
-        stateRef.current.isDraggingToken = null;
+        updateTokenPosition(dragRef.current.isDraggingToken, gx, gy);
+        dragRef.current.isDraggingToken = null;
+        dragRef.current.debugMsg = `Token Placé en ${gx}, ${gy}`;
       }
     };
 
     const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const { camera } = useGameStore.getState();
-      const zoomSpeed = 0.001;
-      const newZoom = Math.min(Math.max(camera.zoom * (1 - e.deltaY * zoomSpeed), 0.1), 5);
-      
-      const rect = canvas.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
+        e.preventDefault();
+        const { camera } = useGameStore.getState();
+        const zoomSpeed = 0.001;
+        const newZoom = Math.min(Math.max(camera.zoom * (1 - e.deltaY * zoomSpeed), 0.1), 5);
+        
+        // Zoom centré sur la souris
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        const worldX = (mouseX - camera.x) / camera.zoom;
+        const worldY = (mouseY - camera.y) / camera.zoom;
+        
+        const newX = mouseX - worldX * newZoom;
+        const newY = mouseY - worldY * newZoom;
 
-      const mouseWorldX = (mouseX - camera.x) / camera.zoom;
-      const mouseWorldY = (mouseY - camera.y) / camera.zoom;
-
-      const newX = mouseX - mouseWorldX * newZoom;
-      const newY = mouseY - mouseWorldY * newZoom;
-
-      setCamera(newX, newY);
-      setZoom(newZoom);
+        setCamera(newX, newY);
+        setZoom(newZoom);
+        dragRef.current.debugMsg = `Zoom: ${newZoom.toFixed(2)}`;
     };
 
-    // Attachement des écouteurs "Vrais" (Pas React)
+    // Attachement des écouteurs "Vrais" (Pas React) pour éviter toute latence
     canvas.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove); // Window pour ne pas perdre le drag
+    window.addEventListener('mousemove', onMouseMove); // Window capture tout
     window.addEventListener('mouseup', onMouseUp);
     canvas.addEventListener('wheel', onWheel, { passive: false });
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
 
     return () => {
-      // Nettoyage impératif
       canvas.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
       canvas.removeEventListener('wheel', onWheel);
-      canvas.removeEventListener('contextmenu', (e) => e.preventDefault());
     };
-  }, []); // [] vide = S'exécute UNE SEULE FOIS au chargement.
+  }, []); // Dépendances vides = Zéro rechargement intempestif
 
   // =========================================================================
-  // 2. BOUCLE DE RENDU (Le Dessinateur)
+  // 2. BOUCLE DE DESSIN (60 FPS)
   // =========================================================================
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
 
-    // Resize Observer
     const resizeObserver = new ResizeObserver(() => {
         if(containerRef.current) {
             canvas.width = containerRef.current.clientWidth;
@@ -180,7 +174,6 @@ const GameCanvas: React.FC = () => {
     let frameId: number;
 
     const render = () => {
-      // On lit le store directement (Zéro latence)
       const { camera, tokens, gridSize, mapBackground, selection } = useGameStore.getState();
 
       // Reset
@@ -197,14 +190,14 @@ const GameCanvas: React.FC = () => {
         ctx.drawImage(mapImage, 0, 0, mapBackground.width, mapBackground.height);
       }
 
-      // Grille
+      // Grille (visible si zoom suffisant)
       if (camera.zoom > 0.2) {
         const startX = Math.floor((-camera.x / camera.zoom) / gridSize) * gridSize - gridSize;
         const startY = Math.floor((-camera.y / camera.zoom) / gridSize) * gridSize - gridSize;
         const endX = startX + (canvas.width / camera.zoom) + 2 * gridSize;
         const endY = startY + (canvas.height / camera.zoom) + 2 * gridSize;
 
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
         ctx.lineWidth = 1;
         ctx.beginPath();
         for (let x = startX; x <= endX; x += gridSize) {
@@ -222,7 +215,7 @@ const GameCanvas: React.FC = () => {
         const y = t.y * gridSize;
         const s = t.size * gridSize;
         
-        ctx.shadowBlur = 10; ctx.shadowColor = 'black';
+        ctx.shadowBlur = 15; ctx.shadowColor = 'black';
         ctx.beginPath();
         ctx.arc(x + s/2, y + s/2, s*0.4, 0, Math.PI*2);
         ctx.fillStyle = t.color;
@@ -233,16 +226,14 @@ const GameCanvas: React.FC = () => {
         }
         ctx.shadowBlur = 0;
       });
-
       ctx.restore();
 
-      // --- DEBUG OVERLAY (Texte Rouge en haut à gauche) ---
-      // Si ça bugge, lis-moi ces valeurs !
+      // --- DEBUG OVERLAY (Texte Rouge) ---
+      // Si tu ne vois pas ça, le composant a crashé
       ctx.fillStyle = 'red';
-      ctx.font = '14px monospace';
-      ctx.fillText(`MODE: ${stateRef.current.isPanning ? 'PANNING' : 'IDLE'}`, 10, 20);
-      ctx.fillText(`CAM X: ${Math.round(camera.x)}`, 10, 40);
-      ctx.fillText(`MOUSE X: ${stateRef.current.lastMouseX}`, 10, 60);
+      ctx.font = 'bold 16px monospace';
+      ctx.fillText(`STATUS: ${dragRef.current.debugMsg}`, 20, 30);
+      ctx.fillText(`CAMERA: ${Math.round(camera.x)}, ${Math.round(camera.y)} (z:${camera.zoom.toFixed(2)})`, 20, 50);
 
       frameId = requestAnimationFrame(render);
     };
@@ -252,9 +243,9 @@ const GameCanvas: React.FC = () => {
       cancelAnimationFrame(frameId);
       resizeObserver.disconnect();
     };
-  }, [mapImage]); // Dépendance minimale
+  }, [mapImage]);
 
-  // Drag & Drop (Gardé simple)
+  // Drag & Drop Image
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
@@ -270,7 +261,7 @@ const GameCanvas: React.FC = () => {
   };
 
   return (
-    <div ref={containerRef} className="w-full h-full bg-black">
+    <div ref={containerRef} className="w-full h-full bg-black relative">
       <canvas
         ref={canvasRef}
         onDragOver={(e) => e.preventDefault()}

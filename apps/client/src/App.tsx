@@ -1,14 +1,10 @@
 import GameCanvas from './components/GameCanvas';
-import InterfaceUI from './components/InterfaceUI';
 
 function App() {
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-black select-none">
-      {/* 1. Le monde du jeu (Canvas) */}
+    // On force un conteneur qui prend 100% de l'écran sans discussion
+    <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', margin: 0, padding: 0 }}>
       <GameCanvas />
-      
-      {/* 2. L'Interface (HUD) */}
-      <InterfaceUI />
     </div>
   );
 }
